@@ -1,0 +1,3 @@
+import type { ReactNode } from "react";
+interface PageHeaderProps { eyebrow?: string; title: string; description: string; action?: ReactNode; }
+export function PageHeader({ eyebrow, title, description, action }: PageHeaderProps) { return <header className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between"><div>{eyebrow ? <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.2em] text-stone-500">{eyebrow}</p> : null}<h1 className="text-2xl font-semibold tracking-tight text-stone-950 sm:text-3xl">{title}</h1><p className="mt-1.5 max-w-3xl text-sm leading-5 text-stone-600">{description}</p></div>{action}</header>; }

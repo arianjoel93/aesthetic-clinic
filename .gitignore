@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.env
+supabase/functions/.env
+supabase/functions/.env.local
+supabase/functions/*.env
+node_modules/
+dist/
+.vite/
+*.log

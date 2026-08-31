@@ -1,0 +1,11 @@
+import { Plus } from "lucide-react";
+import { useState } from "react";
+import { Button } from "../components/ui/Button";
+import { Card } from "../components/ui/Card";
+import { Input } from "../components/ui/Input";
+import { PageHeader } from "../components/ui/PageHeader";
+import { Select } from "../components/ui/Select";
+import { Textarea } from "../components/ui/Textarea";
+import { useCrmStore } from "../store/crmStore";
+import { prettyDate } from "../utils/format";
+export function NotesPage() { const customers = useCrmStore((state) => state.customers); const notes = useCrmStore((state) => state.notes); const addNote = useCrmStore((state) => state.addNote); const [form, setForm] = useState({ customerId: customers[0]?.id ?? "", title: "", content: "" }); return <><PageHeader eyebrow="Contexto" title="Notas internas" description="Registra observaciones útiles para conservar el contexto comercial." /><div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]"><Card><h2 className="text-xl font-black">Nueva nota</h2><div className="mt-5 grid gap-3"><Select value={form.customerId} onChange={(e) => setForm({ ...form, customerId: e.target.value })}>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.company}</option>)}</Select><Input placeholder="Título" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /><Textarea placeholder="Contenido..." value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} /><Button onClick={() => { if (!form.title || !form.content) return; addNote(form); setForm({ ...form, title: "", content: "" }); }}><Plus className="h-4 w-4" />Guardar nota</Button></div></Card><Card><h2 className="text-xl font-black">Historial</h2><div className="mt-5 space-y-3">{notes.map((note) => { const customer = customers.find((item) => item.id === note.customerId); return <article key={note.id} className="rounded-3xl border border-stone-200 bg-stone-50 p-4"><p className="font-black">{note.title}</p><p className="mt-1 text-xs font-bold uppercase tracking-[0.18em] text-stone-500">{customer?.company ?? "Lead"} · {prettyDate(note.createdAt)}</p><p className="mt-3 text-sm leading-6 text-stone-700">{note.content}</p></article>; })}</div></Card></div></>; }
