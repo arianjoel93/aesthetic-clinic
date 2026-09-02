@@ -1,5 +1,6 @@
 ﻿import { Palette, Save, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ImagePlus, UserPlus, UserX } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
@@ -27,6 +28,24 @@ const themeOptions: Array<{ key: AppTheme; name: string; description: string; sw
   { key: "terra", name: "Terra", description: "Minimalista, cálido, tierra, arcilla y arena.", swatches: ["#b45309", "#f7efe7", "#3f2f24"] },
   { key: "sea", name: "Sea", description: "Azules marinos, fresco, limpio y sofisticado.", swatches: ["#0e7490", "#ecfeff", "#083344"] },
 ];
+
+const sellerPermissionOptions = [
+  { key: "agenda", label: "Citas" },
+  { key: "clientes", label: "Clientes" },
+  { key: "servicios", label: "Servicios" },
+  { key: "ventas-cotizaciones", label: "Ventas y cotizaciones" },
+  { key: "reportes", label: "Reportes" },
+  { key: "pos", label: "Punto de venta" },
+] as const;
+
+type SellerProfile = {
+  id: string;
+  username: string;
+  email: string;
+  display_name: string;
+  permissions: Record<string, boolean>;
+  active: boolean;
+};
 
 function SwitchRow({ checked, onChange, title, description }: { checked: boolean; onChange: () => void; title: string; description: string }) {
   return (
@@ -56,6 +75,13 @@ export function SettingsPage() {
   const [posPin, setPosPin] = useState("");
   const [posPinConfirm, setPosPinConfirm] = useState("");
   const [posPinConfigured, setPosPinConfigured] = useState(false);
+  const [companyLogo, setCompanyLogo] = useState("");
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const [sellers, setSellers] = useState<SellerProfile[]>([]);
+  const [sellerForm, setSellerForm] = useState({ username: "", displayName: "", email: "", password: "" });
+  const [sellerPermissions, setSellerPermissions] = useState<Record<string, boolean>>(
+    Object.fromEntries(sellerPermissionOptions.map((item) => [item.key, true])),
+  );
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -74,9 +100,13 @@ export function SettingsPage() {
       setCompanyName(cloudCompanyName);
       updateCompanyName(cloudCompanyName);
     });
+    void getSetting("company_logo_data_url").then((value) => setCompanyLogo(value ?? ""));
 
     if (hasSupabaseConfig && supabase) {
       void getSetting("pos_pin_hash").then((value) => setPosPinConfigured(Boolean(value)));
+      void supabase.from("seller_profiles").select("id, username, email, display_name, permissions, active").eq("active", true).order("display_name").then(({ data }) => {
+        setSellers((data ?? []) as SellerProfile[]);
+      });
       void supabase.auth.getUser().then(async ({ data }) => {
         const user = data.user;
         if (!user) return;
@@ -141,6 +171,63 @@ export function SettingsPage() {
     await showActionSuccess("PIN de POS actualizado", "El nuevo PIN se guardó correctamente.");
   };
 
+  const handleLogoUpload = async (file: File) => {
+    setIsUploadingLogo(true);
+    try {
+      const reader = new FileReader();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => resolve(String(reader.result ?? ""));
+        reader.onerror = () => reject(new Error("No se pudo leer la imagen."));
+        reader.readAsDataURL(file);
+      });
+      if (!dataUrl.startsWith("data:image/")) throw new Error("Selecciona una imagen válida.");
+      await setSetting("company_logo_data_url", dataUrl);
+      setCompanyLogo(dataUrl);
+      setMessage("Logo guardado. Aparecerá en los próximos tickets.");
+      await showActionSuccess("Logo actualizado", "La imagen se guardó correctamente para los tickets.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "No se pudo guardar el logo.");
+    } finally {
+      setIsUploadingLogo(false);
+    }
+  };
+
+  const createSeller = async () => {
+    if (!supabase || !sellerForm.username.trim() || !sellerForm.displayName.trim() || !sellerForm.email.trim() || sellerForm.password.length < 8) {
+      setMessage("Captura usuario, nombre, correo y una contraseña de al menos 8 caracteres.");
+      return;
+    }
+    const { data, error } = await supabase.functions.invoke("seller-admin", {
+      body: {
+        action: "create",
+        username: sellerForm.username,
+        displayName: sellerForm.displayName,
+        email: sellerForm.email,
+        password: sellerForm.password,
+        permissions: sellerPermissions,
+      },
+    });
+    if (error || !data?.ok) {
+      setMessage(error?.message ?? data?.message ?? "No se pudo crear el perfil de vendedor.");
+      return;
+    }
+    setSellers((current) => [...current, data.profile as SellerProfile]);
+    setSellerForm({ username: "", displayName: "", email: "", password: "" });
+    setMessage("Perfil de vendedor creado. Ya puede entrar con su correo y contraseña.");
+    await showActionSuccess("Vendedor creado", "El acceso y sus permisos se guardaron correctamente.");
+  };
+
+  const deactivateSeller = async (seller: SellerProfile) => {
+    if (!supabase) return;
+    const { data, error } = await supabase.functions.invoke("seller-admin", { body: { action: "deactivate", sellerId: seller.id } });
+    if (error || !data?.ok) {
+      setMessage(error?.message ?? data?.message ?? "No se pudo desactivar el vendedor.");
+      return;
+    }
+    setSellers((current) => current.filter((item) => item.id !== seller.id));
+    setMessage("Perfil de vendedor desactivado.");
+  };
+
   const moduleLocksChanged = JSON.stringify(moduleLocks) !== JSON.stringify(savedModuleLocks);
 
   return (
@@ -172,6 +259,20 @@ export function SettingsPage() {
       </div>
 
       <Card>
+        <div className="mb-4 flex items-center gap-2"><ImagePlus className="h-5 w-5 text-rose-500" /><h2 className="text-xl font-semibold text-zinc-900">Logo para tickets</h2></div>
+        <p className="text-sm text-zinc-500">Carga una imagen de tu negocio para mostrarla al inicio de cada ticket.</p>
+        <div className="mt-4 flex flex-wrap items-center gap-4">
+          <div className="grid h-20 w-20 place-items-center overflow-hidden rounded-xl border border-dashed border-zinc-300 bg-zinc-50">
+            {companyLogo ? <img src={companyLogo} alt="Logo de la empresa" className="max-h-full max-w-full object-contain" /> : <ImagePlus className="h-6 w-6 text-zinc-400" />}
+          </div>
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-50">
+            <ImagePlus className="h-4 w-4" /> {isUploadingLogo ? "Guardando..." : "Cargar imagen"}
+            <input type="file" accept="image/*" className="hidden" disabled={isUploadingLogo} onChange={(event) => { const file = event.target.files?.[0]; if (file) void handleLogoUpload(file); event.currentTarget.value = ""; }} />
+          </label>
+        </div>
+      </Card>
+
+      <Card>
         <div className="mb-4 flex items-center gap-2"><SlidersHorizontal className="h-5 w-5 text-rose-500" /><h2 className="text-xl font-semibold text-zinc-900">Acceso a módulos solo para administradores</h2></div>
         <p className="mb-4 text-sm text-zinc-500">Al activar un interruptor se oculta el botón Nuevo de ese módulo. El POS permanece siempre disponible. Presiona Guardar cambios para aplicarlo.</p>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -195,6 +296,22 @@ export function SettingsPage() {
             </button>
           ))}
         </div>
+      </Card>
+
+      <Card>
+        <div className="mb-4 flex items-center gap-2"><UserPlus className="h-5 w-5 text-rose-500" /><h2 className="text-xl font-semibold text-zinc-900">Perfiles de vendedor</h2></div>
+        <p className="text-sm text-zinc-500">Crea accesos separados para el equipo y define los módulos que puede utilizar cada vendedor.</p>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <Input placeholder="Usuario" value={sellerForm.username} onChange={(event) => setSellerForm({ ...sellerForm, username: event.target.value })} />
+          <Input placeholder="Nombre del vendedor" value={sellerForm.displayName} onChange={(event) => setSellerForm({ ...sellerForm, displayName: event.target.value })} />
+          <Input type="email" placeholder="Correo de acceso" value={sellerForm.email} onChange={(event) => setSellerForm({ ...sellerForm, email: event.target.value })} />
+          <Input type="password" placeholder="Contraseña (mínimo 8 caracteres)" value={sellerForm.password} onChange={(event) => setSellerForm({ ...sellerForm, password: event.target.value })} />
+        </div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {sellerPermissionOptions.map((item) => <label key={item.key} className="flex items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-sm text-zinc-700"><input type="checkbox" checked={Boolean(sellerPermissions[item.key])} onChange={(event) => setSellerPermissions({ ...sellerPermissions, [item.key]: event.target.checked })} /> {item.label}</label>)}
+        </div>
+        <Button className="mt-4" onClick={() => void createSeller()}><UserPlus className="h-4 w-4" /> Crear perfil</Button>
+        {sellers.length > 0 ? <div className="mt-5 space-y-2">{sellers.map((seller) => <div key={seller.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2"><div><p className="text-sm font-semibold text-zinc-900">{seller.display_name} <span className="font-normal text-zinc-500">(@{seller.username})</span></p><p className="text-xs text-zinc-500">{seller.email}</p></div><button type="button" onClick={() => void deactivateSeller(seller)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2 py-1 text-xs text-rose-600 hover:bg-rose-50"><UserX className="h-3.5 w-3.5" /> Desactivar</button></div>)}</div> : <p className="mt-5 text-sm text-zinc-500">Aún no hay vendedores activos.</p>}
       </Card>
 
       {message ? <p className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">{message}</p> : null}

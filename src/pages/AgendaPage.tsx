@@ -28,7 +28,7 @@ import { showActionCancelled, showActionSuccess } from "../utils/appAlert";
 
 const weekDays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 const timeSlots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
-type OrderForAppointment = PosSale & { customerEmail?: string; customerWhatsapp?: string; customerPhone?: string };
+type OrderForAppointment = PosSale & { customerEmail?: string; customerWhatsapp?: string; customerPhone?: string; customerNumber?: string };
 
 function fireAppAlert(options: SweetAlertOptions) {
   return Swal.fire({
@@ -50,18 +50,20 @@ function formatCurrencyMXN(value: number) {
   return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 2 }).format(Number.isFinite(value) ? value : 0);
 }
 
-const orderPaidAmount = (order: Pick<PosSale, "paidAmount" | "total">) => Number(order.paidAmount ?? order.total);
-const orderBalance = (order: Pick<PosSale, "paidAmount" | "total">) => Math.max(0, Number(order.total || 0) - orderPaidAmount(order));
+const orderPaidAmount = (order: Pick<PosSale, "paidAmount" | "total" | "paymentStatus">) => order.paymentStatus === "garantia" ? 0 : Number(order.paidAmount ?? order.total);
+const orderBalance = (order: Pick<PosSale, "paidAmount" | "total" | "paymentStatus">) => order.paymentStatus === "garantia" ? 0 : Math.max(0, Number(order.total || 0) - orderPaidAmount(order));
 const orderPaymentLabel = (order: Pick<PosSale, "paymentStatus" | "paidAmount" | "total">) =>
-  (order.paymentStatus === "anticipo" || order.paymentStatus === "anticipo_pagado") && orderBalance(order) > 0 ? "Anticipo pagado" : "Pagado completo";
+  order.paymentStatus === "garantia" ? "Garantía" : order.paymentStatus === "pendiente" ? "Cita sin anticipo" : (order.paymentStatus === "anticipo" || order.paymentStatus === "anticipo_pagado") && orderBalance(order) > 0 ? "Anticipo pagado" : "Pagado completo";
 
 function appointmentContactPhone(appointment: Pick<Appointment, "customerWhatsapp">) {
   return appointment.customerWhatsapp?.replace(/[^\d]/g, "") ?? "";
 }
 
-function buildPaidConfirmationText(customerName: string, confirmLink: string) {
+function buildConfirmationText(customerName: string, confirmLink: string, advancePending = false) {
   return [
-    `Hola ${customerName}, ya registramos el pago/anticipo de tu orden.`,
+    advancePending
+      ? `Hola ${customerName}, tu cita quedó registrada y tiene un saldo pendiente por cubrir.`
+      : `Hola ${customerName}, ya registramos el pago/anticipo de tu orden.`,
     `Por favor confirma o cancela tu fecha y hora aquí: ${confirmLink}`,
     "Gracias por tu preferencia.",
   ].join("\n\n");
@@ -84,8 +86,11 @@ function mapOrderForAppointment(row: Record<string, unknown>, customer?: { email
   const total = Number(row.total ?? 0);
   const advanceAmount = Number(row.advance_amount ?? 500);
   const paymentStatus = String(row.payment_status ?? "pagado") as PosSale["paymentStatus"];
+  const paymentType = String(row.payment_type ?? (paymentStatus === "pendiente" ? "sin_anticipo" : paymentStatus === "garantia" ? "garantia" : "anticipo")) as PosSale["paymentType"];
   const paidAmount = paymentStatus === "anticipo" || paymentStatus === "anticipo_pagado"
     ? Number(row.paid_amount ?? advanceAmount)
+    : paymentStatus === "pendiente" || paymentStatus === "garantia"
+      ? Number(row.paid_amount ?? 0)
     : Number(row.paid_amount ?? total);
   return {
     id: String(row.id),
@@ -99,12 +104,15 @@ function mapOrderForAppointment(row: Record<string, unknown>, customer?: { email
     total,
     advanceAmount,
     paidAmount,
+    paymentType,
     paymentStatus,
     paymentMethod: String(row.payment_method ?? "efectivo") as PosSale["paymentMethod"],
+    paymentInstallments: row.payment_installments ? Number(row.payment_installments) as 3 | 6 : undefined,
     appointmentId: row.appointment_id ? String(row.appointment_id) : undefined,
     customerEmail: customer?.email,
     customerWhatsapp: customer?.whatsapp,
     customerPhone: customer?.phone,
+    customerNumber: customer && "customerNumber" in customer && customer.customerNumber ? String(customer.customerNumber) : undefined,
     items: rawItems.map(mapPosSaleItem),
   };
 }
@@ -223,7 +231,7 @@ export function AgendaPage() {
     date: formatDate(new Date()),
     start: "09:00",
     end: "10:00",
-    sendVia: "email" as "whatsapp" | "email",
+    sendVia: "whatsapp" as "whatsapp" | "email",
   });
 
   const isFormOpen = searchParams.get("nuevo") === "1";
@@ -280,7 +288,7 @@ export function AgendaPage() {
   useEffect(() => {
     if (!selectedOrder) return;
     const customer = selectedOrder.customerId ? customers.find((item) => item.id === selectedOrder.customerId) : undefined;
-    const sendVia = customer?.preferredContactChannel ?? (customer?.email || selectedOrder.customerEmail ? "email" : "whatsapp");
+    const sendVia = customer?.whatsapp || customer?.phone || selectedOrder.customerWhatsapp || selectedOrder.customerPhone ? "whatsapp" : "email";
     setNewAppointment((current) => ({ ...current, sendVia }));
   }, [customers, selectedOrder]);
   const monday = useMemo(() => mondayOf(reference), [reference]);
@@ -379,8 +387,9 @@ export function AgendaPage() {
           order.customerEmail,
           order.customerPhone,
           order.customerWhatsapp,
+          order.customerNumber ? String(order.customerNumber) : "",
         ].join(" ").toLocaleLowerCase("es");
-        const isPaidEnough = orderPaidAmount(order) > 0 || order.paymentStatus === "pagado" || order.paymentStatus === "anticipo" || order.paymentStatus === "anticipo_pagado";
+        const isPaidEnough = order.paymentType === "garantia" || order.paymentStatus === "garantia" || orderPaidAmount(order) > 0 || order.paymentStatus === "pagado" || order.paymentStatus === "anticipo" || order.paymentStatus === "anticipo_pagado";
         const alreadyScheduled = Boolean(order.appointmentId) || scheduledOrderIds.has(order.id) || scheduledFolios.has(order.folio);
         return haystack.includes(query) && isPaidEnough && !alreadyScheduled;
       }).slice(0, 12);
@@ -447,8 +456,8 @@ export function AgendaPage() {
         end: newAppointment.end,
         status: "creada",
         discountPercent: 0,
-        advancePaymentStatus: "pagado",
-        advancePaidAt: new Date().toISOString(),
+        advancePaymentStatus: selectedOrder.paymentStatus === "pendiente" ? "pendiente" : "pagado",
+        advancePaidAt: selectedOrder.paymentStatus === "pendiente" ? undefined : new Date().toISOString(),
         posSaleId: selectedOrder.id,
         orderFolio: selectedOrder.folio,
         confirmationToken: token,
@@ -461,7 +470,7 @@ export function AgendaPage() {
 
       if (newAppointment.sendVia === "whatsapp" && customerWhatsapp) {
         setSendingMessage("Preparando el mensaje de WhatsApp con el enlace de confirmación.");
-        openWhatsAppMessage(customerWhatsapp.replace(/[^\d]/g, ""), buildPaidConfirmationText(customerName, confirmLink));
+        openWhatsAppMessage(customerWhatsapp.replace(/[^\d]/g, ""), buildConfirmationText(customerName, confirmLink, selectedOrder.paymentStatus === "pendiente"));
         await updateAppointmentPersisted(created.id, { status: "enviada" });
       }
       if (newAppointment.sendVia === "whatsapp" && !customerWhatsapp) {
@@ -670,17 +679,7 @@ export function AgendaPage() {
   };
 
   const sendConfirmationRequest = async (appointment: Appointment) => {
-    if ((appointment.advancePaymentStatus ?? "pendiente") !== "pagado") {
-      await fireAppAlert({
-        title: "Anticipo pendiente",
-        text: "Primero marca el anticipo como pagado para enviar la confirmación de fecha y hora.",
-        icon: "info",
-        confirmButtonText: "Entendido",
-      });
-      return;
-    }
-
-    const defaultChannel = appointment.customerEmail ? "email" : appointment.customerWhatsapp ? "whatsapp" : "";
+    const defaultChannel = appointment.customerWhatsapp ? "whatsapp" : appointment.customerEmail ? "email" : "";
     if (!defaultChannel) {
       await fireAppAlert({ title: "Falta contacto", text: "Este cliente no tiene correo ni WhatsApp registrado.", icon: "info", confirmButtonText: "Entendido" });
       return;
@@ -712,7 +711,7 @@ export function AgendaPage() {
         await fireAppAlert({ title: "Falta WhatsApp", text: "Este cliente no tiene WhatsApp registrado.", icon: "info", confirmButtonText: "Entendido" });
         return;
       }
-      openWhatsAppMessage(phone, buildPaidConfirmationText(appointment.customerName, confirmationLink));
+      openWhatsAppMessage(phone, buildConfirmationText(appointment.customerName, confirmationLink, appointment.advancePaymentStatus === "pendiente"));
       const saved = await updateAppointmentPersisted(appointment.id, { confirmationToken: token, status: "enviada" });
       if (saved) setSelectedAppointment(saved);
       await showActionSuccess("Confirmación lista", "Se abrió WhatsApp con el mensaje de confirmación.");
@@ -1037,8 +1036,8 @@ export function AgendaPage() {
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className={`rounded-full px-2.5 py-1 text-xs ${selectedAppointment.advancePaymentStatus === "pagado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>Anticipo {selectedAppointment.advancePaymentStatus === "pagado" ? "pagado" : "pendiente"}</span>
               {reminderButton(selectedAppointment)}
-              <button onClick={() => void sendConfirmationRequest(selectedAppointment)} disabled={selectedAppointment.status === "completada" || editableAdvancePaymentStatus !== "pagado"} className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"><Send className="h-3.5 w-3.5" /> Enviar confirmación</button>
-              {selectedAppointment.confirmationToken && selectedAppointment.advancePaymentStatus === "pagado" ? <button onClick={() => void navigator.clipboard.writeText(buildConfirmationLink(selectedAppointment.confirmationToken!))} className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50"><Link2 className="h-3.5 w-3.5" /> Copiar link</button> : null}
+              <button onClick={() => void sendConfirmationRequest(selectedAppointment)} disabled={selectedAppointment.status === "completada"} className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"><Send className="h-3.5 w-3.5" /> Enviar confirmación</button>
+              {selectedAppointment.confirmationToken ? <button onClick={() => void navigator.clipboard.writeText(buildConfirmationLink(selectedAppointment.confirmationToken!))} className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50"><Link2 className="h-3.5 w-3.5" /> Copiar link</button> : null}
             </div>
 
             <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3">

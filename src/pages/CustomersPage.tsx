@@ -613,7 +613,7 @@ export function CustomersPage() {
             <div className="mt-4 space-y-2 md:hidden">
               {pageCustomers.map((customer) => (
                 <article key={`mobile-${customer.id}`} className="rounded-2xl border border-zinc-200 bg-stone-50 p-3">
-                  <div className="flex items-start gap-3"><img src={customer.profileImageUrl || "https://placehold.co/56x56/webp?text=Cliente"} alt={customer.name} className="h-11 w-11 shrink-0 rounded-full object-cover" /><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-zinc-900">{customer.name}</p><p className="truncate text-xs text-zinc-500">{customer.email || "Sin correo"}</p><p className="text-xs text-zinc-500">{customer.whatsapp || customer.phone || "Sin WhatsApp"}</p></div></div>
+                  <div className="flex items-start gap-3"><img src={customer.profileImageUrl || "https://placehold.co/56x56/webp?text=Cliente"} alt={customer.name} className="h-11 w-11 shrink-0 rounded-full object-cover" /><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-zinc-900">{customer.name}</p><p className="text-xs font-semibold text-rose-600">Cliente #{customer.customerNumber ?? "Pendiente"}</p><p className="truncate text-xs text-zinc-500">{customer.email || "Sin correo"}</p><p className="text-xs text-zinc-500">{customer.whatsapp || customer.phone || "Sin WhatsApp"}</p></div></div>
                   <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setViewingCustomerId(customer.id)} className="rounded-lg border border-zinc-200 p-2 text-zinc-600" title="Ver"><Eye className="h-4 w-4" /></button><button type="button" onClick={() => { setSelectedCustomerId(customer.id); setForm(customerToForm(customer)); }} className="rounded-lg border border-zinc-200 p-2 text-zinc-600" title="Editar"><Pencil className="h-4 w-4" /></button><button type="button" onClick={() => setQuestionnaireCustomer(customer)} className="rounded-lg border border-rose-200 p-2 text-rose-600" title="Cuestionarios"><FileText className="h-4 w-4" /></button><button type="button" onClick={() => void handleDeleteCustomer(customer)} className="rounded-lg border border-rose-200 p-2 text-rose-600" title="Eliminar"><Trash2 className="h-4 w-4" /></button></div>
                 </article>
               ))}
@@ -625,7 +625,7 @@ export function CustomersPage() {
                 <tbody>
                   {pageCustomers.map((customer) => (
                     <tr key={customer.id} className="bg-stone-50">
-                      <td className="rounded-l-2xl px-4 py-4"><div className="flex items-center gap-3"><img src={customer.profileImageUrl || "https://placehold.co/56x56/webp?text=Cliente"} alt={customer.name} className="h-12 w-12 rounded-full object-cover" /><p className="text-zinc-900">{customer.name}</p></div></td>
+                      <td className="rounded-l-2xl px-4 py-4"><div className="flex items-center gap-3"><img src={customer.profileImageUrl || "https://placehold.co/56x56/webp?text=Cliente"} alt={customer.name} className="h-12 w-12 rounded-full object-cover" /><div><p className="text-zinc-900">{customer.name}</p><p className="text-xs font-semibold text-rose-600">Cliente #{customer.customerNumber ?? "Pendiente"}</p></div></div></td>
                       <td className="px-4 py-4"><div>{customer.email || "Sin correo"}</div><div className="text-zinc-500">{customer.whatsapp || customer.phone || "Sin WhatsApp"}</div></td>
                       <td className="px-4 py-4 text-zinc-700">{customer.rfc || "Sin RFC"}</td>
                       <td className="px-4 py-4 text-zinc-700">{(customer.allergies ?? []).join(", ") || "Sin alergias"}</td>
@@ -750,6 +750,7 @@ export function CustomersPage() {
               <section className="rounded-2xl border border-zinc-200 p-4">
                 <h4 className="font-semibold text-zinc-900">Información y padecimientos</h4>
                 <div className="mt-4 space-y-2 text-sm text-zinc-700">
+                  <p><span className="text-zinc-500">Número de cliente:</span> {viewingCustomer.customerNumber ?? "Pendiente"}</p>
                   <p><span className="text-zinc-500">WhatsApp:</span> {viewingCustomer.whatsapp || viewingCustomer.phone || "Sin dato"}</p>
                   <p><span className="text-zinc-500">Correo:</span> {viewingCustomer.email || "Sin dato"}</p>
                   <p><span className="text-zinc-500">Canal preferido:</span> {viewingCustomer.preferredContactChannel === "whatsapp" ? "WhatsApp" : "Correo electrónico"}</p>

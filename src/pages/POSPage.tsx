@@ -7,6 +7,7 @@ import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
 import { Select } from "../components/ui/Select";
 import { requireSupabaseSession } from "../lib/cloud";
+import { getSetting } from "../lib/appSettings";
 import { applyPosPaymentMetaToSales, savePosPaymentMeta } from "../lib/posPaymentMetaApi";
 import { listServices } from "../lib/servicesApi";
 import { useCrmStore } from "../store/crmStore";
@@ -16,18 +17,18 @@ import { showActionCancelled, showActionSuccess } from "../utils/appAlert";
 import { getDemoLimitNotice } from "../utils/demoAccess";
 import { sendCashReportEmail as sendConfiguredCashReportEmail } from "../utils/appointmentEmail";
 
-type PosCustomerOption = { id: string; name: string; email?: string; phone?: string; whatsapp?: string };
+type PosCustomerOption = { id: string; customerNumber?: string; name: string; email?: string; phone?: string; whatsapp?: string };
 type CashReport = { session: CashSession; sales: PosSale[]; closedAt: string; soldTotal: number; expectedTotal: number };
 
 const money = (value: number) => new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(value || 0);
 const dateKey = (value: string) => new Date(value).toISOString().slice(0, 10);
 const dateTime = (value: string) => new Date(value).toLocaleString("es-MX", { dateStyle: "medium", timeStyle: "short" });
-const salePaidAmount = (sale: Pick<PosSale, "paidAmount" | "total">) => Number(sale.paidAmount ?? sale.total);
-const saleBalance = (sale: Pick<PosSale, "paidAmount" | "total">) => Math.max(0, Number(sale.total || 0) - salePaidAmount(sale));
+const salePaidAmount = (sale: Pick<PosSale, "paidAmount" | "total" | "paymentStatus">) => sale.paymentStatus === "garantia" ? 0 : Number(sale.paidAmount ?? sale.total);
+const saleBalance = (sale: Pick<PosSale, "paidAmount" | "total" | "paymentStatus">) => sale.paymentStatus === "garantia" ? 0 : Math.max(0, Number(sale.total || 0) - salePaidAmount(sale));
 const isAdvancePaidSale = (sale: Pick<PosSale, "paymentStatus" | "paidAmount" | "total">) =>
   (sale.paymentStatus === "anticipo" || sale.paymentStatus === "anticipo_pagado") && saleBalance(sale) > 0;
 const salePaymentLabel = (sale: Pick<PosSale, "paymentStatus" | "paidAmount" | "total">) =>
-  isAdvancePaidSale(sale) ? "Anticipo pagado" : "Pagado completo";
+  sale.paymentStatus === "garantia" ? "Garantía" : sale.paymentStatus === "pendiente" ? "Cita sin anticipo" : isAdvancePaidSale(sale) ? "Anticipo pagado" : "Pagado completo";
 function firePosAlert(options: SweetAlertOptions) {
   return Swal.fire({
     ...options,
@@ -60,8 +61,11 @@ function mapSale(row: Record<string, unknown>, items: PosSaleItem[] = []): PosSa
   const total = Number(row.total ?? 0);
   const advanceAmount = Number(row.advance_amount ?? 500);
   const paymentStatus = String(row.payment_status ?? "pagado") as PosSale["paymentStatus"];
+  const paymentType = String(row.payment_type ?? (paymentStatus === "pendiente" ? "sin_anticipo" : paymentStatus === "garantia" ? "garantia" : "anticipo")) as PosSale["paymentType"];
   const paidAmount = paymentStatus === "anticipo" || paymentStatus === "anticipo_pagado"
     ? Number(row.paid_amount ?? advanceAmount)
+    : paymentStatus === "pendiente" || paymentStatus === "garantia"
+      ? Number(row.paid_amount ?? 0)
     : Number(row.paid_amount ?? total);
   return {
     id: String(row.id),
@@ -75,8 +79,10 @@ function mapSale(row: Record<string, unknown>, items: PosSaleItem[] = []): PosSa
     total,
     advanceAmount,
     paidAmount,
+    paymentType,
     paymentStatus,
     paymentMethod: String(row.payment_method ?? "efectivo") as PosSale["paymentMethod"],
+    paymentInstallments: row.payment_installments ? Number(row.payment_installments) as 3 | 6 : undefined,
     appointmentId: row.appointment_id ? String(row.appointment_id) : undefined,
     items,
   };
@@ -124,15 +130,21 @@ export function POSPage() {
   const [openSession, setOpenSession] = useState<CashSession | null>(null);
   const [sales, setSales] = useState<PosSale[]>([]);
   const [historySales, setHistorySales] = useState<PosSale[]>([]);
-  const [openingAmount, setOpeningAmount] = useState("0");
+  const [openingAmount, setOpeningAmount] = useState("2000");
   const [customerId, setCustomerId] = useState("");
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
   const [serviceId, setServiceId] = useState("");
   const [serviceSearch, setServiceSearch] = useState("");
   const [unitPrice, setUnitPrice] = useState("0");
   const [quantity, setQuantity] = useState("1");
   const [saleNote, setSaleNote] = useState("");
+  const [paymentType, setPaymentType] = useState<NonNullable<PosSale["paymentType"]>>("anticipo");
   const [paymentStatus, setPaymentStatus] = useState<NonNullable<PosSale["paymentStatus"]>>("anticipo");
   const [advanceAmount, setAdvanceAmount] = useState("500");
+  const [paymentMethod, setPaymentMethod] = useState<PosSale["paymentMethod"]>("efectivo");
+  const [paymentInstallments, setPaymentInstallments] = useState<3 | 6>(3);
+  const [companyLogo, setCompanyLogo] = useState("");
   const [items, setItems] = useState<PosSaleItem[]>([]);
   const [message, setMessage] = useState("");
   const [lastSale, setLastSale] = useState<PosSale | null>(null);
@@ -148,8 +160,8 @@ export function POSPage() {
   const soldTotal = sales.reduce((sum, sale) => sum + salePaidAmount(sale), 0);
   const expectedTotal = (openSession?.openingAmount ?? 0) + soldTotal;
   const subtotal = items.reduce((sum, item) => sum + item.total, 0);
-  const currentPaidAmount = paymentStatus === "pagado" ? subtotal : Number(advanceAmount || 0);
-  const currentBalance = Math.max(0, subtotal - currentPaidAmount);
+  const currentPaidAmount = paymentType === "anticipo" ? Math.min(subtotal, Number(advanceAmount || 0)) : 0;
+  const currentBalance = paymentType === "garantia" ? 0 : Math.max(0, subtotal - currentPaidAmount);
   const selectedCustomer = customers.find((customer) => customer.id === customerId);
   const selectedService = services.find((service) => service.id === serviceId);
   const isLocked = Boolean(openSession?.posLocked);
@@ -158,6 +170,11 @@ export function POSPage() {
     () => services.filter((service) => `${service.name} ${service.category ?? ""}`.toLowerCase().includes(serviceSearch.toLowerCase())),
     [serviceSearch, services],
   );
+  const filteredCustomers = useMemo(() => {
+    const query = customerSearch.trim().toLocaleLowerCase("es");
+    if (!query) return customers.slice(0, 30);
+    return customers.filter((customer) => [customer.name, customer.email, customer.phone, customer.whatsapp, customer.customerNumber ? String(customer.customerNumber) : ""].join(" ").toLocaleLowerCase("es").includes(query)).slice(0, 30);
+  }, [customerSearch, customers]);
 
   const filteredHistory = useMemo(
     () =>
@@ -174,13 +191,18 @@ export function POSPage() {
   const resetSaleForm = (nextServices = services) => {
     const firstService = nextServices[0];
     setCustomerId("");
+    setCustomerSearch("");
+    setIsCustomerPickerOpen(false);
     setServiceSearch("");
     setServiceId(firstService?.id ?? "");
     setUnitPrice(String(firstService?.price ?? 0));
     setQuantity("1");
     setSaleNote("");
+    setPaymentType("anticipo");
     setPaymentStatus("anticipo");
     setAdvanceAmount("500");
+    setPaymentMethod("efectivo");
+    setPaymentInstallments(3);
     setItems([]);
   };
 
@@ -261,8 +283,11 @@ export function POSPage() {
   const loadFromSupabase = async () => {
     const supabase = await requireSupabaseSession();
 
-    const [customerResult, loadedServices, cashResult, salesResult] = await Promise.all([
-      supabase.from("customers").select("id, full_name, email, phone, whatsapp").order("full_name", { ascending: true }),
+    let customerResult = await supabase.from("customers").select("id, customer_number, full_name, email, phone, whatsapp").order("full_name", { ascending: true });
+    if (customerResult.error && /customer_number/i.test(customerResult.error.message)) {
+      customerResult = await supabase.from("customers").select("id, full_name, email, phone, whatsapp").order("full_name", { ascending: true }) as typeof customerResult;
+    }
+    const [loadedServices, cashResult, salesResult] = await Promise.all([
       listServices({ activeOnly: true }),
       supabase.from("cash_sessions").select("*").eq("status", "abierta").order("opened_at", { ascending: false }).limit(1),
       supabase.from("pos_sales").select("*").order("created_at", { ascending: false }).limit(100),
@@ -275,6 +300,7 @@ export function POSPage() {
 
     const nextCustomers = (customerRows ?? []).map((row) => ({
       id: String(row.id),
+      customerNumber: row.customer_number === null || row.customer_number === undefined ? undefined : String(row.customer_number),
       name: String(row.full_name),
       email: row.email ? String(row.email) : undefined,
       phone: row.phone ? String(row.phone) : undefined,
@@ -290,6 +316,7 @@ export function POSPage() {
     setHistorySales(nextHistory);
     setSales(nextOpen ? nextHistory.filter((sale) => sale.cashSessionId === nextOpen.id) : []);
     resetSaleForm(nextServices);
+    void getSetting("company_logo_data_url").then((value) => setCompanyLogo(value ?? "")).catch(() => setCompanyLogo(""));
   };
 
   useEffect(() => {
@@ -377,8 +404,8 @@ export function POSPage() {
     }
     const price = Number(unitPrice || 0);
     const qty = Number(quantity || 1);
-    if (price <= 0) {
-      setMessage("Captura un precio mayor a cero para este servicio.");
+    if (price < 0 || (price === 0 && paymentType !== "garantia")) {
+      setMessage(paymentType === "garantia" ? "El precio no puede ser negativo." : "Captura un precio mayor a cero para este servicio.");
       return;
     }
     if (!Number.isInteger(qty) || qty <= 0) {
@@ -406,8 +433,8 @@ export function POSPage() {
       setMessage("El POS está bloqueado. Desbloquéalo para vender.");
       return;
     }
-    if (subtotal <= 0 || items.length === 0) {
-      setMessage("No se puede registrar una venta con total en cero.");
+    if ((subtotal <= 0 && paymentType !== "garantia") || items.length === 0) {
+      setMessage(paymentType === "garantia" ? "Agrega al menos un servicio para registrar la garantía." : "No se puede registrar una venta con total en cero.");
       return;
     }
     if (!selectedCustomer) {
@@ -415,10 +442,17 @@ export function POSPage() {
       return;
     }
     const paidAmount = currentPaidAmount;
-    if (paidAmount <= 0 || paidAmount > subtotal) {
+    if (paymentType === "anticipo" && (paidAmount <= 0 || paidAmount > subtotal)) {
       setMessage("El anticipo debe ser mayor a cero y no puede superar el total de la orden.");
       return;
     }
+    const finalPaymentStatus: NonNullable<PosSale["paymentStatus"]> = paymentType === "garantia"
+      ? "garantia"
+      : paymentType === "sin_anticipo"
+        ? "pendiente"
+        : paidAmount >= subtotal
+          ? "pagado"
+          : "anticipo";
     const supabase = await requireSupabaseSession();
     const { data: folio } = await supabase.rpc("next_pos_folio");
     const salePayload: Record<string, unknown> = {
@@ -429,10 +463,12 @@ export function POSPage() {
       user_name: session?.name ?? "Administrador",
       subtotal,
       total: subtotal,
-      advance_amount: paymentStatus === "pagado" ? 0 : paidAmount,
+      advance_amount: paymentType === "anticipo" ? paidAmount : 0,
       paid_amount: paidAmount,
-      payment_status: paymentStatus,
-      payment_method: "efectivo",
+      payment_status: finalPaymentStatus,
+      payment_type: paymentType,
+      payment_method: paymentMethod,
+      payment_installments: paymentMethod === "bill_packet" ? paymentInstallments : null,
     };
     let saleResult = await supabase.from("pos_sales").insert(salePayload).select("*").single();
     if (saleResult.error?.code === "PGRST204") {
@@ -440,6 +476,8 @@ export function POSPage() {
       delete compatiblePayload.advance_amount;
       delete compatiblePayload.paid_amount;
       delete compatiblePayload.payment_status;
+      delete compatiblePayload.payment_type;
+      delete compatiblePayload.payment_installments;
       saleResult = await supabase.from("pos_sales").insert(compatiblePayload).select("*").single();
     }
     const { data: saleRow, error: saleError } = saleResult;
@@ -481,16 +519,22 @@ export function POSPage() {
     }
     const created = {
       ...mapSale(saleRow as Record<string, unknown>, (itemRows ?? []).map((item) => mapItem(item as Record<string, unknown>))),
-      advanceAmount: paymentStatus === "pagado" ? 0 : paidAmount,
+      advanceAmount: paymentType === "anticipo" ? paidAmount : 0,
       paidAmount,
-      paymentStatus,
+      paymentType,
+      paymentStatus: finalPaymentStatus,
+      paymentMethod,
+      paymentInstallments: paymentMethod === "bill_packet" ? paymentInstallments : undefined,
     };
     try {
       await savePosPaymentMeta({
         saleId,
-        paymentStatus,
-        advanceAmount: paymentStatus === "pagado" ? 0 : paidAmount,
+        paymentStatus: finalPaymentStatus,
+        advanceAmount: paymentType === "anticipo" ? paidAmount : 0,
         paidAmount,
+        paymentType,
+        paymentMethod,
+        paymentInstallments: paymentMethod === "bill_packet" ? paymentInstallments : undefined,
         appointmentId: created.appointmentId,
       });
     } catch (error) {
@@ -529,51 +573,109 @@ export function POSPage() {
 
     const confirmation = await firePosAlert({
       icon: "question",
-      title: "Completar pago",
+      title: "Editar y registrar pago",
       html: `<div style="text-align:left;font-size:14px;line-height:1.7">
         <p><strong>Orden:</strong> ${sale.folio}</p>
         <p><strong>Cliente:</strong> ${sale.customerName ?? "Venta general"}</p>
         <p><strong>Total orden:</strong> ${money(sale.total)}</p>
         <p><strong>Cobrado:</strong> ${money(salePaidAmount(sale))}</p>
         <p><strong>Saldo pendiente:</strong> ${money(balance)}</p>
+        <label for="pending-payment-amount" style="display:block;margin-top:12px;font-weight:600">Pago a registrar</label>
+        <input id="pending-payment-amount" type="number" min="0.01" max="${balance.toFixed(2)}" step="0.01" value="${balance.toFixed(2)}" style="display:block;width:100%;box-sizing:border-box;padding:8px;border:1px solid #d4d4d8;border-radius:8px">
+        <label for="pending-payment-method" style="display:block;margin-top:12px;font-weight:600">Método de pago</label>
+        <select id="pending-payment-method" style="display:block;width:100%;box-sizing:border-box;padding:8px;border:1px solid #d4d4d8;border-radius:8px">
+          <option value="transferencia">Transferencia</option>
+          <option value="efectivo">Efectivo</option>
+          <option value="tarjeta">Tarjeta</option>
+          <option value="bill_packet">Bill Packet</option>
+        </select>
+        <label for="pending-payment-installments" style="display:block;margin-top:12px;font-weight:600">Plazo Bill Packet</label>
+        <select id="pending-payment-installments" style="display:block;width:100%;box-sizing:border-box;padding:8px;border:1px solid #d4d4d8;border-radius:8px">
+          <option value="3">3 meses</option>
+          <option value="6">6 meses</option>
+        </select>
       </div>`,
       showCancelButton: true,
-      confirmButtonText: "Registrar pago total",
+      confirmButtonText: "Guardar pago e imprimir",
       cancelButtonText: "Cancelar",
+      didOpen: () => {
+        const method = document.getElementById("pending-payment-method") as HTMLSelectElement | null;
+        const installments = document.getElementById("pending-payment-installments") as HTMLSelectElement | null;
+        const syncInstallments = () => {
+          if (installments) installments.disabled = method?.value !== "bill_packet";
+        };
+        method?.addEventListener("change", syncInstallments);
+        syncInstallments();
+      },
+      preConfirm: () => {
+        const amount = Number((document.getElementById("pending-payment-amount") as HTMLInputElement | null)?.value ?? 0);
+        const method = (document.getElementById("pending-payment-method") as HTMLSelectElement | null)?.value as PosSale["paymentMethod"] | undefined;
+        const installmentsValue = (document.getElementById("pending-payment-installments") as HTMLSelectElement | null)?.value;
+        if (!Number.isFinite(amount) || amount <= 0 || amount > balance + 0.005) {
+          Swal.showValidationMessage(`El pago debe ser mayor a $0 y no exceder ${money(balance)}.`);
+          return false;
+        }
+        return {
+          amount: Math.min(balance, amount),
+          method: method ?? "efectivo",
+          installments: method === "bill_packet" ? Number(installmentsValue) as 3 | 6 : undefined,
+        };
+      },
     });
     if (!confirmation.isConfirmed) {
       await showActionCancelled("La orden conserva su saldo pendiente.");
       return;
     }
 
+    const payment = confirmation.value as { amount: number; method: PosSale["paymentMethod"]; installments?: 3 | 6 } | undefined;
+    if (!payment) return;
+    const paidAmount = Math.min(sale.total, salePaidAmount(sale) + payment.amount);
+    const paymentStatus: NonNullable<PosSale["paymentStatus"]> = paidAmount >= sale.total
+      ? "pagado"
+      : sale.paymentType === "sin_anticipo" ? "pendiente" : "anticipo";
+
     try {
       const supabase = await requireSupabaseSession();
       const { data, error } = await supabase
         .from("pos_sales")
-        .update({ paid_amount: sale.total, payment_status: "pagado" })
+        .update({
+          paid_amount: paidAmount,
+          payment_status: paymentStatus,
+          payment_method: payment.method,
+          payment_installments: payment.method === "bill_packet" ? payment.installments : null,
+        })
         .eq("id", sale.id)
         .select("*")
         .single();
       if (error && error.code !== "PGRST204") throw error;
-      const completed = {
+      const updatedSale = {
         ...mapSale((data ?? sale) as unknown as Record<string, unknown>, sale.items),
         advanceAmount: sale.advanceAmount,
-        paidAmount: sale.total,
-        paymentStatus: "pagado" as const,
+        paidAmount,
+        paymentStatus,
+        paymentType: sale.paymentType,
+        paymentMethod: payment.method,
+        paymentInstallments: payment.installments,
       };
       await savePosPaymentMeta({
         saleId: sale.id,
-        paymentStatus: "pagado",
+        paymentStatus,
         advanceAmount: Number(sale.advanceAmount ?? 0),
-        paidAmount: sale.total,
+        paidAmount,
+        paymentType: sale.paymentType,
+        paymentMethod: payment.method,
+        paymentInstallments: payment.installments,
         appointmentId: sale.appointmentId,
       });
-      setSales((prev) => prev.map((item) => (item.id === completed.id ? completed : item)));
-      setHistorySales((prev) => prev.map((item) => (item.id === completed.id ? completed : item)));
-      setLastSale(completed);
-      setMessage("Pago total registrado. La orden quedó completada.");
-      await showActionSuccess("Pago completado", "La orden se marcó como pagada completa y se abrirá el ticket para impresión.");
-      printTicket(completed);
+      setSales((prev) => prev.map((item) => (item.id === updatedSale.id ? updatedSale : item)));
+      setHistorySales((prev) => prev.map((item) => (item.id === updatedSale.id ? updatedSale : item)));
+      setLastSale(updatedSale);
+      setMessage(paymentStatus === "pagado" ? "Pago total registrado. La orden quedó completada." : "Pago registrado. La orden conserva un saldo pendiente.");
+      await showActionSuccess(
+        paymentStatus === "pagado" ? "Pago completado" : "Pago registrado",
+        paymentStatus === "pagado" ? "La orden se marcó como pagada completa y se abrirá el ticket actualizado." : "Se guardó el pago parcial y se abrirá el ticket actualizado.",
+      );
+      printTicket(updatedSale);
     } catch (error) {
       const text = error instanceof Error ? error.message : "No se pudo completar el pago de la orden.";
       setMessage(text);
@@ -785,46 +887,61 @@ export function POSPage() {
       setMessage("No se encontró la venta para imprimir.");
       return;
     }
+    const ticketCustomer = customers.find((customer) => customer.id === sale.customerId);
     const ticketRows = sale.items.map((item) => `<tr><td>${item.quantity}</td><td>${item.serviceName}</td><td>${money(item.unitPrice)}</td><td>${money(item.total)}</td></tr>`).join("");
     const html = `
       <html><head><title>${sale.folio}</title><style>
         @page { size: 80mm auto; margin: 0; }
         * { box-sizing: border-box; }
         body { margin: 0; padding: 0; color: #111; font-family: Arial, sans-serif; }
-        .ticket-print { width: 72mm; max-width: 72mm; margin: 0 auto; padding: 4mm; font-size: 11px; line-height: 1.25; }
+        .ticket-print { width: 72mm; max-width: 72mm; margin: 0 auto; padding: 4mm; font-size: 9px; line-height: 1.2; overflow-wrap: anywhere; }
         h1 { font-size: 15px; margin: 0 0 2mm; text-align: center; text-transform: uppercase; }
         p { margin: 1mm 0; } .center { text-align: center; } .sep { border-top: 1px dashed #111; margin: 2.5mm 0; }
-        table { width: 100%; border-collapse: collapse; } th, td { padding: 1mm 0; vertical-align: top; }
-        th { border-bottom: 1px dashed #111; font-size: 10px; text-align: left; } td:nth-child(3), td:nth-child(4), th:nth-child(3), th:nth-child(4) { text-align: right; }
-        .total { font-size: 15px; font-weight: 700; text-align: right; margin-top: 2mm; }
+        table { width: 100%; table-layout: fixed; border-collapse: collapse; } th, td { padding: .45mm 0; vertical-align: top; overflow-wrap: anywhere; } th:nth-child(1), td:nth-child(1) { width: 11%; } th:nth-child(2), td:nth-child(2) { width: 49%; } th:nth-child(3), td:nth-child(3) { width: 20%; } th:nth-child(4), td:nth-child(4) { width: 20%; }
+        .items-table { font-size: 7px; line-height: 1.1; } .items-table th { border-bottom: 1px dashed #111; font-size: 6.5px; text-align: left; } .items-table td { font-size: 7px; }
+        td:nth-child(3), td:nth-child(4), th:nth-child(3), th:nth-child(4) { text-align: right; }
+        .total { font-size: 12px; font-weight: 700; text-align: right; margin-top: 2mm; }
         .no-print { margin: 4mm auto; width: 72mm; display: block; }
         @media print { .no-print { display: none !important; } body { margin: 0; padding: 0; } .ticket-print { width: 72mm; max-width: 72mm; padding: 4mm; } }
       </style></head><body>
         <button class="no-print" onclick="window.print()">Imprimir ticket</button>
         <section class="ticket-print">
+          ${companyLogo ? `<img class="ticket-logo" src="${companyLogo}" alt="Logo" style="display:block;max-width:38mm;max-height:18mm;margin:0 auto 2mm;object-fit:contain;" />` : ""}
           <h1>${companyName}</h1>
           <p class="center">Ticket de venta</p><div class="sep"></div>
           <p><strong>Folio:</strong> ${sale.folio}</p>
           <p><strong>Fecha:</strong> ${dateTime(sale.createdAt)}</p>
           <p><strong>Cajero:</strong> ${sale.userName}</p>
           <p><strong>Cliente:</strong> ${sale.customerName ?? "Venta general"}</p>
+          ${ticketCustomer?.customerNumber ? `<p><strong>Número de cliente:</strong> ${ticketCustomer.customerNumber}</p>` : ""}
           <div class="sep"></div>
-          <table><thead><tr><th>Cant.</th><th>Servicio</th><th>P.U.</th><th>Total</th></tr></thead><tbody>${ticketRows}</tbody></table>
+          <table class="items-table"><thead><tr><th>Cant.</th><th>Servicio</th><th>P.U.</th><th>Total</th></tr></thead><tbody>${ticketRows}</tbody></table>
           <div class="sep"></div>
           <p>Subtotal: ${money(sale.subtotal)}</p>
           <p>Total orden: ${money(sale.total)}</p>
           <p class="total">Cobrado: ${money(salePaidAmount(sale))}</p>
           <p>Pendiente: ${money(saleBalance(sale))}</p>
           <p>Estado: ${salePaymentLabel(sale)}</p>
-          <p>Método: ${sale.paymentMethod}</p>
+          <p>Método: ${sale.paymentMethod === "bill_packet" ? `Bill Packet a ${sale.paymentInstallments ?? 3} meses` : sale.paymentMethod === "transferencia" ? "Transferencia" : sale.paymentMethod === "tarjeta" ? "Tarjeta" : "Efectivo"}</p>
           <div class="sep"></div>
           <p class="center">Gracias por su compra.</p><p class="center">Conserve su ticket.</p>
-        </section><script>window.focus(); window.print();</script>
+        </section>
       </body></html>`;
     const popup = window.open("", "_blank", "width=420,height=720");
     if (!popup) return;
     popup.document.write(html);
     popup.document.close();
+    const printWindow = () => {
+      popup.focus();
+      popup.print();
+    };
+    const logo = popup.document.querySelector<HTMLImageElement>(".ticket-logo");
+    if (logo && !logo.complete) {
+      logo.addEventListener("load", () => popup.setTimeout(printWindow, 100), { once: true });
+      logo.addEventListener("error", () => popup.setTimeout(printWindow, 100), { once: true });
+    } else {
+      popup.setTimeout(printWindow, 150);
+    }
   };
 
   const saleFormContent = !openSession ? (
@@ -844,7 +961,7 @@ export function POSPage() {
         <div className="flex items-center gap-2">{isLocked ? <span className="rounded-full bg-zinc-900 px-3 py-1 text-xs text-white">Bloqueado</span> : null}<button onClick={() => void cancelSaleModal()} className="grid h-9 w-9 place-items-center rounded-full text-zinc-500 hover:bg-zinc-100"><X className="h-5 w-5" /></button></div>
       </div>
       <div className="grid gap-3 md:grid-cols-2">
-        <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Cliente</label><Select disabled={isLocked} value={customerId} onChange={(event) => setCustomerId(event.target.value)}><option value="">Selecciona cliente</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</Select></div>
+        <div className="relative z-30"><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Cliente</label><button type="button" disabled={isLocked} onClick={() => setIsCustomerPickerOpen((current) => !current)} className="flex min-h-10 w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 text-left text-sm text-zinc-700 disabled:opacity-60"><span className="truncate">{selectedCustomer ? `${selectedCustomer.name}${selectedCustomer.customerNumber ? ` · Cliente #${selectedCustomer.customerNumber}` : ""}` : "Selecciona cliente"}</span><Search className="h-4 w-4 shrink-0 text-zinc-400" /></button>{isCustomerPickerOpen ? <div className="absolute left-0 right-0 top-full mt-1 overflow-hidden rounded-xl border border-zinc-200 bg-white p-2 shadow-xl"><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" /><input autoFocus value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="Buscar nombre o número" className="w-full rounded-lg border border-zinc-200 py-2 pl-9 pr-2 text-sm outline-none focus:border-rose-300" /></div><div className="mt-2 max-h-48 overflow-y-auto">{filteredCustomers.length === 0 ? <p className="p-2 text-xs text-zinc-500">No hay clientes coincidentes.</p> : filteredCustomers.map((customer) => <button type="button" key={customer.id} onClick={() => { setCustomerId(customer.id); setCustomerSearch(""); setIsCustomerPickerOpen(false); }} className="block w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-rose-50"><span className="font-medium text-zinc-800">{customer.name}</span><span className="block text-xs text-zinc-500">{customer.customerNumber ? `Cliente #${customer.customerNumber}` : ""}{customer.email ? ` · ${customer.email}` : ""}</span></button>)}</div></div> : null}</div>
         <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Buscar servicio</label><div className="relative"><Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" /><Input disabled={isLocked} value={serviceSearch} onChange={(event) => setServiceSearch(event.target.value)} placeholder="Buscar servicio" className="pl-10" /></div></div>
         <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Servicio</label><Select disabled={isLocked} value={serviceId} onChange={(event) => handleServiceChange(event.target.value)}>{filteredServices.map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}</Select></div>
         <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Precio</label><Input disabled={isLocked} type="number" min={0} value={unitPrice} onChange={(event) => setUnitPrice(event.target.value)} /></div>
@@ -852,14 +969,18 @@ export function POSPage() {
         <div className="flex items-end"><Button disabled={isLocked} className="w-full" variant="secondary" onClick={addItem}>Agregar concepto</Button></div>
       </div>
       <div className="mt-3 grid gap-3 md:grid-cols-3">
-        <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Pago recibido</label><Select disabled={isLocked} value={paymentStatus} onChange={(event) => setPaymentStatus(event.target.value as NonNullable<PosSale["paymentStatus"]>)}><option value="anticipo">Anticipo pagado</option><option value="pagado">Orden pagada completa</option></Select></div>
-        <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Anticipo</label><Input disabled={isLocked || paymentStatus === "pagado"} type="number" min={0} value={paymentStatus === "pagado" ? String(subtotal) : advanceAmount} onChange={(event) => setAdvanceAmount(event.target.value)} /></div>
+        <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Tipo de operación</label><Select disabled={isLocked} value={paymentType} onChange={(event) => { const next = event.target.value as NonNullable<PosSale["paymentType"]>; setPaymentType(next); setPaymentStatus(next === "garantia" ? "garantia" : next === "sin_anticipo" ? "pendiente" : "anticipo"); }}><option value="anticipo">Anticipo</option><option value="garantia">Garantía</option><option value="sin_anticipo">Cita sin anticipo</option></Select></div>
+        {paymentType === "anticipo" ? <>
+          <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Cantidad de anticipo</label><Input disabled={isLocked} type="number" min={0} value={advanceAmount} onChange={(event) => setAdvanceAmount(event.target.value)} /></div>
+          <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Método de pago</label><Select disabled={isLocked} value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as PosSale["paymentMethod"])}><option value="transferencia">Transferencia</option><option value="efectivo">Efectivo</option><option value="tarjeta">Tarjeta</option><option value="bill_packet">Bill Packet</option></Select></div>
+          {paymentMethod === "bill_packet" ? <div><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Plazo Bill Packet</label><Select disabled={isLocked} value={paymentInstallments} onChange={(event) => setPaymentInstallments(Number(event.target.value) as 3 | 6)}><option value={3}>3 meses</option><option value={6}>6 meses</option></Select></div> : null}
+        </> : null}
         <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm"><p className="text-xs uppercase tracking-[0.12em] text-zinc-500">Debe por pagar</p><p className="mt-1 font-semibold text-zinc-900">{money(currentBalance)}</p></div>
       </div>
       <div className="mt-3"><label className="mb-1 block text-xs uppercase tracking-[0.12em] text-zinc-500">Nota temporal</label><Input disabled={isLocked} value={saleNote} onChange={(event) => setSaleNote(event.target.value)} placeholder="Nota interna de esta venta" /></div>
       <div className="mt-4 space-y-2 md:hidden">{items.length === 0 ? <p className="rounded-xl bg-zinc-50 p-3 text-center text-xs text-zinc-500">Agrega al menos un servicio para registrar la venta.</p> : items.map((item) => <article key={`mobile-item-${item.id}`} className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3"><div className="min-w-0"><p className="truncate text-sm text-zinc-900">{item.serviceName}</p><p className="text-xs text-zinc-500">{item.quantity} × {money(item.unitPrice)} = {money(item.total)}</p></div><button disabled={isLocked} onClick={() => void removeSaleItem(item.id)} className="shrink-0 rounded-lg border border-rose-200 p-2 text-rose-600 disabled:opacity-50"><Trash2 className="h-4 w-4" /></button></article>)}</div>
-      {items.length > 0 ? <div className="mt-3 grid gap-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm md:hidden"><p className="flex justify-between"><span>Total orden</span><strong>{money(subtotal)}</strong></p><p className="flex justify-between"><span>{paymentStatus === "pagado" ? "Pagado ahora" : "Anticipo pagado"}</span><strong>{money(currentPaidAmount)}</strong></p><p className="flex justify-between text-rose-600"><span>Debe por pagar</span><strong>{money(currentBalance)}</strong></p></div> : null}
-      <div className="mt-5 hidden overflow-x-auto md:block"><table className="w-full min-w-[620px] text-left text-sm"><thead className="border-b border-zinc-200 text-xs uppercase tracking-[0.12em] text-zinc-500"><tr><th className="py-2">Concepto</th><th>Cantidad</th><th>Precio</th><th>Total</th><th></th></tr></thead><tbody>{items.length === 0 ? <tr><td colSpan={5} className="py-5 text-center text-zinc-500">Agrega al menos un servicio para registrar la venta.</td></tr> : items.map((item) => <tr key={item.id} className="border-b border-zinc-100"><td className="py-3">{item.serviceName}</td><td>{item.quantity}</td><td>{money(item.unitPrice)}</td><td>{money(item.total)}</td><td className="text-right"><button disabled={isLocked} onClick={() => void removeSaleItem(item.id)} className="rounded-lg border border-rose-200 p-2 text-rose-600 hover:bg-rose-50 disabled:opacity-50"><Trash2 className="h-4 w-4" /></button></td></tr>)}</tbody>{items.length > 0 ? <tfoot className="border-t border-zinc-200 text-sm"><tr><td colSpan={3} className="py-3 text-right text-zinc-500">Total orden</td><td className="font-semibold text-zinc-900">{money(subtotal)}</td><td /></tr><tr><td colSpan={3} className="py-2 text-right text-zinc-500">{paymentStatus === "pagado" ? "Pagado ahora" : "Anticipo pagado"}</td><td className="font-semibold text-zinc-900">{money(currentPaidAmount)}</td><td /></tr><tr><td colSpan={3} className="py-2 text-right text-rose-600">Debe por pagar</td><td className="font-semibold text-rose-600">{money(currentBalance)}</td><td /></tr></tfoot> : null}</table></div>
+      {items.length > 0 ? <div className="mt-3 grid gap-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm md:hidden"><p className="flex justify-between"><span>Total orden</span><strong>{money(subtotal)}</strong></p><p className="flex justify-between"><span>{paymentType === "garantia" ? "Garantía" : currentBalance === 0 ? "Pagado ahora" : paymentType === "sin_anticipo" ? "Sin anticipo" : "Anticipo pagado"}</span><strong>{money(currentPaidAmount)}</strong></p><p className="flex justify-between text-rose-600"><span>Debe por pagar</span><strong>{money(currentBalance)}</strong></p></div> : null}
+      <div className="mt-5 hidden overflow-x-auto md:block"><table className="w-full min-w-[620px] text-left text-sm"><thead className="border-b border-zinc-200 text-xs uppercase tracking-[0.12em] text-zinc-500"><tr><th className="py-2">Concepto</th><th>Cantidad</th><th>Precio</th><th>Total</th><th></th></tr></thead><tbody>{items.length === 0 ? <tr><td colSpan={5} className="py-5 text-center text-zinc-500">Agrega al menos un servicio para registrar la venta.</td></tr> : items.map((item) => <tr key={item.id} className="border-b border-zinc-100"><td className="py-3">{item.serviceName}</td><td>{item.quantity}</td><td>{money(item.unitPrice)}</td><td>{money(item.total)}</td><td className="text-right"><button disabled={isLocked} onClick={() => void removeSaleItem(item.id)} className="rounded-lg border border-rose-200 p-2 text-rose-600 hover:bg-rose-50 disabled:opacity-50"><Trash2 className="h-4 w-4" /></button></td></tr>)}</tbody>{items.length > 0 ? <tfoot className="border-t border-zinc-200 text-sm"><tr><td colSpan={3} className="py-3 text-right text-zinc-500">Total orden</td><td className="font-semibold text-zinc-900">{money(subtotal)}</td><td /></tr><tr><td colSpan={3} className="py-2 text-right text-zinc-500">{paymentType === "garantia" ? "Garantía" : currentBalance === 0 ? "Pagado ahora" : paymentType === "sin_anticipo" ? "Sin anticipo" : "Anticipo pagado"}</td><td className="font-semibold text-zinc-900">{money(currentPaidAmount)}</td><td /></tr><tr><td colSpan={3} className="py-2 text-right text-rose-600">Debe por pagar</td><td className="font-semibold text-rose-600">{money(currentBalance)}</td><td /></tr></tfoot> : null}</table></div>
       <div className="mt-5 flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm text-zinc-500">Total pagado</p><p className="text-3xl font-semibold text-zinc-900">{money(currentPaidAmount)}</p><p className="mt-1 text-sm text-zinc-500">Debe por pagar: {money(currentBalance)}</p></div><Button onClick={finishSale} disabled={isLocked || items.length === 0 || subtotal <= 0}>Finalizar venta</Button></div>
     </Card>
   );
@@ -925,8 +1046,8 @@ export function POSPage() {
       <Card>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="text-xl font-semibold text-zinc-900">Ventas realizadas</h2><Button variant="secondary" onClick={() => void loadFromSupabase()}>Actualizar</Button></div>
         <div className="grid gap-3 md:grid-cols-4"><Input type="date" value={filterDate} onChange={(event) => setFilterDate(event.target.value)} /><Select value={filterCustomer} onChange={(event) => setFilterCustomer(event.target.value)}><option value="">Todos los clientes</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</Select><Input type="number" placeholder="Monto mínimo" value={filterMin} onChange={(event) => setFilterMin(event.target.value)} /><Input type="number" placeholder="Monto máximo" value={filterMax} onChange={(event) => setFilterMax(event.target.value)} /></div>
-        <div className="mt-4 space-y-2 md:hidden">{filteredHistory.length === 0 ? <p className="rounded-xl bg-zinc-50 p-3 text-center text-xs text-zinc-500">No hay ventas para los filtros seleccionados.</p> : filteredHistory.map((sale) => <article key={`mobile-sale-${sale.id}`} className="rounded-xl border border-zinc-200 bg-zinc-50 p-3"><div className="flex items-start justify-between gap-2"><div><p className="text-sm font-semibold text-zinc-900">{sale.folio}</p><p className="text-xs text-zinc-500">{dateTime(sale.createdAt)}</p></div><p className="text-sm font-semibold text-zinc-900">{money(salePaidAmount(sale))}</p></div><p className="mt-2 truncate text-xs text-zinc-600">{sale.customerName ?? "Venta general"} | {sale.items.map((item) => item.serviceName).join(", ") || "Sin detalle"}</p><p className="mt-1 text-xs text-zinc-500">{salePaymentLabel(sale)} · Orden {money(sale.total)}{saleBalance(sale) > 0 ? ` · Debe ${money(saleBalance(sale))}` : ""}</p><div className="mt-3 grid gap-2 sm:grid-cols-2">{saleBalance(sale) > 0 ? <Button className="w-full" onClick={() => void completeSalePayment(sale)}>Completar pago</Button> : null}<Button className="w-full" variant="secondary" onClick={() => printTicket(sale)}><Printer className="h-4 w-4" /> Reimprimir</Button></div></article>)}</div>
-        <div className="mt-4 hidden overflow-x-auto md:block"><table className="w-full min-w-[980px] text-left text-xs"><thead className="border-b border-zinc-200 text-xs uppercase tracking-[0.12em] text-zinc-500"><tr><th className="py-2">Folio</th><th>Fecha</th><th>Cliente</th><th>Servicios</th><th>Pago</th><th>Total orden</th><th>Cobrado</th><th>Pendiente</th><th></th></tr></thead><tbody>{filteredHistory.length === 0 ? <tr><td colSpan={9} className="py-5 text-center text-zinc-500">No hay ventas para los filtros seleccionados.</td></tr> : filteredHistory.map((sale) => <tr key={sale.id} className="border-b border-zinc-100"><td className="py-5 font-semibold">{sale.folio}</td><td>{dateTime(sale.createdAt)}</td><td>{sale.customerName ?? "Venta general"}</td><td>{sale.items.map((item) => item.serviceName).join(", ") || "Sin detalle"}</td><td>{salePaymentLabel(sale)}</td><td>{money(sale.total)}</td><td>{money(salePaidAmount(sale))}</td><td className={saleBalance(sale) > 0 ? "font-semibold text-rose-600" : "text-zinc-500"}>{money(saleBalance(sale))}</td><td className="text-right"><div className="flex justify-end gap-2">{saleBalance(sale) > 0 ? <Button onClick={() => void completeSalePayment(sale)}>Completar pago</Button> : null}<Button variant="secondary" onClick={() => printTicket(sale)}><Printer className="h-4 w-4" /> Reimprimir</Button></div></td></tr>)}</tbody></table></div>
+        <div className="mt-4 space-y-2 md:hidden">{filteredHistory.length === 0 ? <p className="rounded-xl bg-zinc-50 p-3 text-center text-xs text-zinc-500">No hay ventas para los filtros seleccionados.</p> : filteredHistory.map((sale) => <article key={`mobile-sale-${sale.id}`} className="rounded-xl border border-zinc-200 bg-zinc-50 p-3"><div className="flex items-start justify-between gap-2"><div><p className="text-sm font-semibold text-zinc-900">{sale.folio}</p><p className="text-xs text-zinc-500">{dateTime(sale.createdAt)}</p></div><p className="text-sm font-semibold text-zinc-900">{money(salePaidAmount(sale))}</p></div><p className="mt-2 truncate text-xs text-zinc-600">{sale.customerName ?? "Venta general"} | {sale.items.map((item) => item.serviceName).join(", ") || "Sin detalle"}</p><p className="mt-1 text-xs text-zinc-500">{salePaymentLabel(sale)} · Orden {money(sale.total)}{saleBalance(sale) > 0 ? ` · Debe ${money(saleBalance(sale))}` : ""}</p><div className="mt-3 grid gap-2 sm:grid-cols-2">{saleBalance(sale) > 0 ? <Button className="w-full" onClick={() => void completeSalePayment(sale)}>Editar y pagar</Button> : null}<Button className="w-full" variant="secondary" onClick={() => printTicket(sale)}><Printer className="h-4 w-4" /> Reimprimir</Button></div></article>)}</div>
+        <div className="mt-4 hidden overflow-x-auto md:block"><table className="w-full min-w-[980px] text-left text-xs"><thead className="border-b border-zinc-200 text-xs uppercase tracking-[0.12em] text-zinc-500"><tr><th className="py-2">Folio</th><th>Fecha</th><th>Cliente</th><th>Servicios</th><th>Pago</th><th>Total orden</th><th>Cobrado</th><th>Pendiente</th><th></th></tr></thead><tbody>{filteredHistory.length === 0 ? <tr><td colSpan={9} className="py-5 text-center text-zinc-500">No hay ventas para los filtros seleccionados.</td></tr> : filteredHistory.map((sale) => <tr key={sale.id} className="border-b border-zinc-100"><td className="py-5 font-semibold">{sale.folio}</td><td>{dateTime(sale.createdAt)}</td><td>{sale.customerName ?? "Venta general"}</td><td>{sale.items.map((item) => item.serviceName).join(", ") || "Sin detalle"}</td><td>{salePaymentLabel(sale)}</td><td>{money(sale.total)}</td><td>{money(salePaidAmount(sale))}</td><td className={saleBalance(sale) > 0 ? "font-semibold text-rose-600" : "text-zinc-500"}>{money(saleBalance(sale))}</td><td className="text-right"><div className="flex justify-end gap-2">{saleBalance(sale) > 0 ? <Button onClick={() => void completeSalePayment(sale)}>Editar y pagar</Button> : null}<Button variant="secondary" onClick={() => printTicket(sale)}><Printer className="h-4 w-4" /> Reimprimir</Button></div></td></tr>)}</tbody></table></div>
       </Card>
     </section>
   );

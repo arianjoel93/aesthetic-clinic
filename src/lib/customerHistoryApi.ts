@@ -1,5 +1,6 @@
 import type { CustomerServiceHistory } from "../types/crm";
 import { requireSupabaseSession } from "./cloud";
+import { loadPosPaymentMeta } from "./posPaymentMetaApi";
 
 const historyColumns = `
   id, customer_id, service_id, service_name, service_date, amount, payment_status,
@@ -35,20 +36,12 @@ function historyTime(item: CustomerServiceHistory) {
 
 export async function listCustomerServiceHistory(customerId: string) {
   const client = await requireSupabaseSession();
-  const [storedResult, salesResult, appointmentsResult] = await Promise.all([
+  const [storedResult, appointmentsResult] = await Promise.all([
     client
       .from("customer_service_history")
       .select(historyColumns)
       .eq("customer_id", customerId)
       .order("service_date", { ascending: false, nullsFirst: false })
-      .order("created_at", { ascending: false }),
-    client
-      .from("pos_sales")
-      .select(`
-        id, folio, created_at, payment_method, payment_status,
-        pos_sale_items(id, service_id, service_name, total)
-      `)
-      .eq("customer_id", customerId)
       .order("created_at", { ascending: false }),
     client
       .from("appointments")
@@ -59,8 +52,26 @@ export async function listCustomerServiceHistory(customerId: string) {
   ]);
 
   if (storedResult.error) throw storedResult.error;
-  if (salesResult.error) throw salesResult.error;
   if (appointmentsResult.error) throw appointmentsResult.error;
+
+  let salesResult = await client
+    .from("pos_sales")
+    .select(`
+      id, folio, created_at, payment_method, payment_status, payment_type, payment_installments,
+      paid_amount, advance_amount,
+      pos_sale_items(id, service_id, service_name, total)
+    `)
+    .eq("customer_id", customerId)
+    .order("created_at", { ascending: false });
+  if (salesResult.error && /payment_status|payment_type|payment_installments|paid_amount|advance_amount/i.test(salesResult.error.message)) {
+    salesResult = await client
+      .from("pos_sales")
+      .select("id, folio, created_at, payment_method, pos_sale_items(id, service_id, service_name, total)")
+      .eq("customer_id", customerId)
+      .order("created_at", { ascending: false }) as typeof salesResult;
+  }
+  if (salesResult.error) throw salesResult.error;
+  const paymentMeta = await loadPosPaymentMeta().catch(() => new Map());
 
   const stored = (storedResult.data ?? []).map((row) =>
     mapStoredHistory(row as Record<string, unknown>));
@@ -77,8 +88,8 @@ export async function listCustomerServiceHistory(customerId: string) {
       serviceName: String(item.service_name ?? "Servicio"),
       serviceDate: String(saleRow.created_at ?? "").slice(0, 10) || undefined,
       amount: Number(item.total ?? 0),
-      paymentStatus: ["anticipo", "anticipo_pagado"].includes(String(saleRow.payment_status ?? "pagado")) ? "pendiente" : "pagado",
-      paymentMethod: String(saleRow.payment_method ?? "efectivo") as CustomerServiceHistory["paymentMethod"],
+      paymentStatus: ["anticipo", "anticipo_pagado", "pendiente"].includes(String(paymentMeta.get(String(saleRow.id))?.paymentStatus ?? saleRow.payment_status ?? "pagado")) ? "pendiente" : "pagado",
+      paymentMethod: String(paymentMeta.get(String(saleRow.id))?.paymentMethod ?? saleRow.payment_method ?? "efectivo") as CustomerServiceHistory["paymentMethod"],
       receiptFolio: String(saleRow.folio ?? ""),
       sourceType: "pos",
       sourceReference: "Punto de Venta",

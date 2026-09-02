@@ -5,7 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
-import { buildSessionFromSupabaseUser } from "../lib/auth";
+import { buildCloudSessionFromSupabaseUser } from "../lib/auth";
 import { hasSupabaseConfig, supabase } from "../lib/supabaseClient";
 import { useCrmStore } from "../store/crmStore";
 
@@ -64,7 +64,7 @@ export function LoginPage() {
         return;
       }
 
-      setSession(buildSessionFromSupabaseUser(data.user));
+      setSession(await buildCloudSessionFromSupabaseUser(data.user));
       navigate("/app/panel-general");
     } catch (error) {
       setSession(null);

@@ -19,12 +19,12 @@ const dateKey = (value: string) => {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 };
 const dateTime = (value: string) => new Date(value).toLocaleString("es-MX", { dateStyle: "medium", timeStyle: "short" });
-const salePaidAmount = (sale: Pick<PosSale, "paidAmount" | "total">) => Number(sale.paidAmount ?? sale.total);
-const saleBalance = (sale: Pick<PosSale, "paidAmount" | "total">) => Math.max(0, Number(sale.total || 0) - salePaidAmount(sale));
+const salePaidAmount = (sale: Pick<PosSale, "paidAmount" | "total" | "paymentStatus">) => sale.paymentStatus === "garantia" ? 0 : Number(sale.paidAmount ?? sale.total);
+const saleBalance = (sale: Pick<PosSale, "paidAmount" | "total" | "paymentStatus">) => sale.paymentStatus === "garantia" ? 0 : Math.max(0, Number(sale.total || 0) - salePaidAmount(sale));
 const salePaymentLabel = (sale: Pick<PosSale, "paymentStatus" | "paidAmount" | "total">) =>
-  (sale.paymentStatus === "anticipo" || sale.paymentStatus === "anticipo_pagado") && saleBalance(sale) > 0 ? "Anticipo pagado" : "Pagado completo";
+  sale.paymentStatus === "garantia" ? "Garantía" : sale.paymentStatus === "pendiente" ? "Cita sin anticipo" : (sale.paymentStatus === "anticipo" || sale.paymentStatus === "anticipo_pagado") && saleBalance(sale) > 0 ? "Anticipo pagado" : "Pagado completo";
 const hasAdvanceBalance = (sale: Pick<PosSale, "paymentStatus" | "paidAmount" | "total">) =>
-  (sale.paymentStatus === "anticipo" || sale.paymentStatus === "anticipo_pagado") && salePaidAmount(sale) > 0 && saleBalance(sale) > 0;
+  (sale.paymentStatus === "anticipo" || sale.paymentStatus === "anticipo_pagado" || sale.paymentStatus === "pendiente") && saleBalance(sale) > 0;
 const formatLocalDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 const currentMonthRange = () => {
   const today = new Date();
@@ -94,8 +94,11 @@ function mapSale(row: Record<string, unknown>): PosSale {
   const total = Number(row.total ?? 0);
   const advanceAmount = Number(row.advance_amount ?? 500);
   const paymentStatus = String(row.payment_status ?? "pagado") as PosSale["paymentStatus"];
+  const paymentType = String(row.payment_type ?? (paymentStatus === "pendiente" ? "sin_anticipo" : paymentStatus === "garantia" ? "garantia" : "anticipo")) as PosSale["paymentType"];
   const paidAmount = paymentStatus === "anticipo" || paymentStatus === "anticipo_pagado"
     ? Number(row.paid_amount ?? advanceAmount)
+    : paymentStatus === "pendiente" || paymentStatus === "garantia"
+      ? Number(row.paid_amount ?? 0)
     : Number(row.paid_amount ?? total);
   return {
     id: String(row.id),
@@ -109,8 +112,10 @@ function mapSale(row: Record<string, unknown>): PosSale {
     total,
     advanceAmount,
     paidAmount,
+    paymentType,
     paymentStatus,
     paymentMethod: String(row.payment_method ?? "efectivo") as PosSale["paymentMethod"],
+    paymentInstallments: row.payment_installments ? Number(row.payment_installments) as 3 | 6 : undefined,
     appointmentId: row.appointment_id ? String(row.appointment_id) : undefined,
     items: rawItems.map(mapSaleItem),
   };

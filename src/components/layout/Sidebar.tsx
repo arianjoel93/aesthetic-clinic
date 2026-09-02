@@ -16,11 +16,11 @@ import { cn } from "../../utils/cn";
 
 const sections = [
   { to: "/app/panel-general", label: "Panel general", icon: LayoutGrid },
-  { to: "/app/pos", label: "POS", icon: Store },
-  { to: "/app/ventas", label: "Ventas", icon: ChartNoAxesColumnIncreasing },
-  { to: "/app/agenda", label: "Citas", icon: CalendarDays },
-  { to: "/app/clientes", label: "Clientes", icon: Users },
-  { to: "/app/servicios", label: "Servicios", icon: Sparkles },
+  { to: "/app/pos", label: "POS", icon: Store, permission: "pos" },
+  { to: "/app/ventas", label: "Ventas", icon: ChartNoAxesColumnIncreasing, permission: "ventas-cotizaciones" },
+  { to: "/app/agenda", label: "Citas", icon: CalendarDays, permission: "agenda" },
+  { to: "/app/clientes", label: "Clientes", icon: Users, permission: "clientes" },
+  { to: "/app/servicios", label: "Servicios", icon: Sparkles, permission: "servicios" },
 ];
 
 interface SidebarProps {
@@ -68,7 +68,7 @@ export function Sidebar({ collapsed, mobileOpen, onMobileClose, onToggle }: Side
       </div>
 
       <nav className="space-y-1 px-3 py-4">
-        {sections.map(({ to, label, icon: Icon }) => (
+        {sections.filter((item) => session?.role === "Administrador" || !item.permission || session?.permissions?.[item.permission] !== false).map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}

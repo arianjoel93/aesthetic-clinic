@@ -3,6 +3,7 @@ export type Priority = "baja" | "media" | "alta";
 
 export interface Customer {
   id: string;
+  customerNumber?: string;
   name: string;
   company: string;
   email: string;
@@ -46,7 +47,7 @@ export interface CustomerServiceHistory {
   serviceDate?: string;
   amount?: number;
   paymentStatus: "sin_registro" | "pendiente" | "pagado";
-  paymentMethod?: "efectivo" | "tarjeta" | "transferencia" | "otro";
+  paymentMethod?: "efectivo" | "tarjeta" | "transferencia" | "bill_packet" | "otro";
   receiptFolio?: string;
   receiptSentAt?: string;
   receiptEmail?: string;
@@ -179,8 +180,10 @@ export interface PosSale {
   total: number;
   advanceAmount?: number;
   paidAmount?: number;
-  paymentStatus?: "anticipo" | "anticipo_pagado" | "pagado";
-  paymentMethod: "efectivo" | "tarjeta" | "transferencia";
+  paymentType?: "anticipo" | "garantia" | "sin_anticipo";
+  paymentStatus?: "anticipo" | "anticipo_pagado" | "pendiente" | "garantia" | "pagado";
+  paymentMethod: "efectivo" | "tarjeta" | "transferencia" | "bill_packet";
+  paymentInstallments?: 3 | 6;
   appointmentId?: string;
   items: PosSaleItem[];
 }
@@ -198,7 +201,7 @@ export interface SalesHistoryRecord {
   saleDate: string;
   amount?: number;
   paymentStatus: "sin_registro" | "pendiente" | "pagado";
-  paymentMethod?: "efectivo" | "tarjeta" | "transferencia" | "otro";
+  paymentMethod?: "efectivo" | "tarjeta" | "transferencia" | "bill_packet" | "otro";
   receiptFolio?: string;
   sourceType: SalesHistorySource;
   sourceReference?: string;
@@ -208,7 +211,8 @@ export interface SalesHistoryRecord {
 export interface UserSession {
   name: string;
   email: string;
-  role: "Administrador";
+  role: "Administrador" | "Vendedor";
+  permissions?: Record<string, boolean>;
   avatarUrl?: string;
   avatarPath?: string;
   firstName?: string;

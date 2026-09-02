@@ -5,14 +5,17 @@ const POS_PAYMENT_META_KEY = "pos_sale_payment_meta_v1";
 
 export type PosPaymentMeta = {
   saleId: string;
+  paymentType?: NonNullable<PosSale["paymentType"]>;
   paymentStatus: NonNullable<PosSale["paymentStatus"]>;
   advanceAmount: number;
   paidAmount: number;
+  paymentMethod?: PosSale["paymentMethod"];
+  paymentInstallments?: 3 | 6;
   appointmentId?: string;
   updatedAt: string;
 };
 
-type PosSalePaymentFields = Pick<PosSale, "id" | "paymentStatus" | "advanceAmount" | "paidAmount" | "appointmentId">;
+type PosSalePaymentFields = Pick<PosSale, "id" | "paymentType" | "paymentStatus" | "advanceAmount" | "paidAmount" | "paymentMethod" | "paymentInstallments" | "appointmentId">;
 
 function normalizeRows(value: unknown): PosPaymentMeta[] {
   if (!Array.isArray(value)) return [];
@@ -21,9 +24,12 @@ function normalizeRows(value: unknown): PosPaymentMeta[] {
     .filter((row): row is PosPaymentMeta => Boolean(row.saleId))
     .map((row) => ({
       saleId: String(row.saleId),
-      paymentStatus: (row.paymentStatus === "pagado" ? "pagado" : row.paymentStatus === "anticipo_pagado" ? "anticipo_pagado" : "anticipo"),
+      paymentType: row.paymentType === "garantia" ? "garantia" : row.paymentType === "sin_anticipo" ? "sin_anticipo" : "anticipo",
+      paymentStatus: row.paymentStatus === "pagado" ? "pagado" : row.paymentStatus === "pendiente" ? "pendiente" : row.paymentStatus === "garantia" ? "garantia" : row.paymentStatus === "anticipo_pagado" ? "anticipo_pagado" : "anticipo",
       advanceAmount: Number(row.advanceAmount ?? 0),
       paidAmount: Number(row.paidAmount ?? 0),
+      paymentMethod: row.paymentMethod as PosSale["paymentMethod"] | undefined,
+      paymentInstallments: row.paymentInstallments === 6 ? 6 : row.paymentInstallments === 3 ? 3 : undefined,
       appointmentId: row.appointmentId ? String(row.appointmentId) : undefined,
       updatedAt: row.updatedAt ? String(row.updatedAt) : new Date().toISOString(),
     }));
@@ -83,6 +89,9 @@ export function applyPosPaymentMeta<T extends PosSalePaymentFields>(sale: T, met
     paymentStatus: meta.paymentStatus,
     advanceAmount: meta.advanceAmount,
     paidAmount: meta.paidAmount,
+    paymentType: meta.paymentType ?? sale.paymentType,
+    paymentMethod: meta.paymentMethod ?? sale.paymentMethod,
+    paymentInstallments: meta.paymentInstallments ?? sale.paymentInstallments,
     appointmentId: sale.appointmentId ?? meta.appointmentId,
   };
 }
