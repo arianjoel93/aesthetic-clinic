@@ -13,6 +13,7 @@ import { SettingsPage } from "../pages/SettingsPage";
 import { SalesPage } from "../pages/SalesPage";
 import { AdminPinGate } from "./AdminPinGate";
 import { ProtectedRoute } from "./ProtectedRoute";
+import { ModulePermissionGate } from "./ModulePermissionGate";
 
 export const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/app/panel-general" replace /> },
@@ -27,11 +28,11 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <Navigate to="/app/panel-general" replace /> },
           { path: "panel-general", element: <DashboardPage /> },
-          { path: "agenda", element: <AgendaPage /> },
-          { path: "clientes", element: <CustomersPage /> },
-          { path: "pos", element: <POSPage /> },
-          { path: "ventas", element: <SalesPage /> },
-          { path: "servicios", element: <ServicesPage /> },
+          { element: <ModulePermissionGate module="agenda" />, children: [{ path: "agenda", element: <AgendaPage /> }] },
+          { element: <ModulePermissionGate module="clientes" />, children: [{ path: "clientes", element: <CustomersPage /> }] },
+          { element: <ModulePermissionGate module="pos" />, children: [{ path: "pos", element: <POSPage /> }] },
+          { element: <ModulePermissionGate module="ventas-cotizaciones" />, children: [{ path: "ventas", element: <SalesPage /> }] },
+          { element: <ModulePermissionGate module="servicios" />, children: [{ path: "servicios", element: <ServicesPage /> }] },
           { path: "tratamientos", element: <ModulePlaceholderPage title="Tratamientos" description="Este módulo concentrará catálogo de tratamientos, duración, precio y recursos asociados." createLabel="Nuevo tratamiento" /> },
           { path: "seguimientos", element: <ModulePlaceholderPage title="Seguimientos" description="Aquí centralizaremos seguimientos post cita, recordatorios y estados de avance por cliente." createLabel="Nuevo seguimiento" /> },
           { path: "ventas-cotizaciones", element: <ModulePlaceholderPage title="Ventas y cotizaciones" description="Aquí estaremos montando cotizadores, cierre de ventas y control de propuestas comerciales." createLabel="Nueva cotización" /> },

@@ -60,6 +60,7 @@ export function Topbar({ onOpenSidebar }: TopbarProps) {
         customer.email,
         customer.whatsapp,
         customer.phone,
+        customer.customerNumber ? String(customer.customerNumber) : "",
       ].join(" ").toLocaleLowerCase("es").includes(term)).slice(0, 5),
       appointments: appointments.filter((appointment) => [
         appointment.customerName,
@@ -213,7 +214,7 @@ export function Topbar({ onOpenSidebar }: TopbarProps) {
                       <p className="mb-1 px-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Clientes</p>
                       {globalSearchResults.customers.map((customer) => (
                         <button key={customer.id} type="button" onClick={() => { setOpenGlobalSearch(false); navigate(`/app/clientes?q=${encodeURIComponent(customer.name)}`); }} className="block w-full rounded-xl px-3 py-2 text-left hover:bg-zinc-50">
-                          <span className="block truncate text-sm text-zinc-800">{customer.name}</span>
+                          <span className="block truncate text-sm text-zinc-800">{customer.name} {customer.customerNumber ? `· Cliente #${customer.customerNumber}` : ""}</span>
                           <span className="block truncate text-xs text-zinc-500">{customer.email || customer.whatsapp || customer.phone}</span>
                         </button>
                       ))}

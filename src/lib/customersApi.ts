@@ -2,17 +2,17 @@ import type { Customer } from "../types/crm";
 import { requireSupabaseSession } from "./cloud";
 
 const customerColumns = `
-  id, full_name, company, email, phone, whatsapp, rfc, profile_image_url, status, owner, owner_name,
+  id, customer_number, full_name, company, email, phone, whatsapp, rfc, profile_image_url, status, owner, owner_name,
   created_at, birth_date, gender, preferred_schedule, first_visit_date, medical_alerts, notes,
   allergies, surgeries, diseases, previous_procedures, thyroid_issues, body_products,
   previous_botox_or_substance, previous_substance_details, secondary_reactions,
   seafood_allergy, seafood_allergy_details, healing_problems, preferred_contact_channel
 `;
-const legacyCustomerColumns = customerColumns.replace(", preferred_contact_channel", "");
+const legacyCustomerColumns = customerColumns.replace(", customer_number", "").replace(", preferred_contact_channel", "");
 const customerOptionColumns = `
-  id, full_name, company, email, phone, whatsapp, status, created_at, preferred_contact_channel
+  id, customer_number, full_name, company, email, phone, whatsapp, status, created_at, preferred_contact_channel
 `;
-const legacyCustomerOptionColumns = customerOptionColumns.replace(", preferred_contact_channel", "");
+const legacyCustomerOptionColumns = customerOptionColumns.replace(", customer_number", "").replace(", preferred_contact_channel", "");
 
 export type CustomerSort = "recent" | "name_asc";
 
@@ -27,6 +27,7 @@ function mapCustomer(row: Record<string, unknown>): Customer {
   const profileImagePath = row.profile_image_url ? String(row.profile_image_url) : "";
   return {
     id: String(row.id),
+    customerNumber: row.customer_number === null || row.customer_number === undefined ? undefined : String(row.customer_number),
     name: String(row.full_name ?? "Cliente"),
     company: String(row.company ?? "Particular"),
     email: row.email ? String(row.email) : "",
@@ -135,7 +136,7 @@ export async function listSupabaseCustomers() {
   if (!result.error) {
     return (result.data ?? []).map((row) => mapCustomer(row as unknown as Record<string, unknown>));
   }
-  if (!/preferred_contact_channel/i.test(result.error.message)) throw result.error;
+  if (!/preferred_contact_channel|customer_number/i.test(result.error.message)) throw result.error;
   const fallback = await client.from("customers").select(legacyCustomerOptionColumns).order("full_name", { ascending: true });
   if (fallback.error) throw fallback.error;
   return (fallback.data ?? []).map((row) => mapCustomer(row as unknown as Record<string, unknown>));
@@ -163,7 +164,7 @@ export async function listSupabaseCustomersPage({
   const to = from + safePageSize - 1;
   const term = sanitizeCustomerSearch(search);
 
-  const runQuery = (columns: string) => {
+  const runQuery = (columns: string, includeCustomerNumber = true) => {
     let request = client.from("customers").select(columns, { count: "exact" });
     if (term) {
       const pattern = `%${term}%`;
@@ -173,6 +174,7 @@ export async function listSupabaseCustomersPage({
         `phone.ilike.${pattern}`,
         `whatsapp.ilike.${pattern}`,
         `rfc.ilike.${pattern}`,
+        ...(includeCustomerNumber && term.match(/^\d+$/) ? [`customer_number.eq.${term}`] : []),
       ].join(","));
     }
     request = sort === "name_asc"
@@ -186,9 +188,9 @@ export async function listSupabaseCustomersPage({
     const customers = (result.data ?? []).map((row) => mapCustomer(row as unknown as Record<string, unknown>));
     return { customers: await withSignedAvatars(customers), total: result.count ?? 0 };
   }
-  if (!/preferred_contact_channel/i.test(result.error.message)) throw result.error;
+  if (!/preferred_contact_channel|customer_number/i.test(result.error.message)) throw result.error;
 
-  const fallback = await runQuery(legacyCustomerColumns);
+  const fallback = await runQuery(legacyCustomerColumns, false);
   if (fallback.error) throw fallback.error;
   const customers = (fallback.data ?? []).map((row) => mapCustomer(row as unknown as Record<string, unknown>));
   return { customers: await withSignedAvatars(customers), total: fallback.count ?? 0 };
@@ -204,7 +206,7 @@ export async function saveSupabaseCustomer(customerId: string | null, payload: P
   if (!result.error) {
     return withSignedAvatar(mapCustomer(result.data as unknown as Record<string, unknown>));
   }
-  if (!/preferred_contact_channel/i.test(result.error.message)) throw result.error;
+  if (!/preferred_contact_channel|customer_number/i.test(result.error.message)) throw result.error;
   const { preferred_contact_channel: _preferredContactChannel, ...legacyRecord } = record;
   const fallback = isUuid(customerId)
     ? client.from("customers").update(legacyRecord).eq("id", customerId!).select(legacyCustomerColumns).single()

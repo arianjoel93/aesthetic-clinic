@@ -29,9 +29,26 @@ export function buildSessionFromSupabaseUser(user: User): UserSession {
 
 export async function buildCloudSessionFromSupabaseUser(user: User): Promise<UserSession> {
   const session = buildSessionFromSupabaseUser(user);
-  if (!session.avatarPath) return session;
   const client = getSupabaseClient();
-  const { data, error } = await client.storage.from("admin-avatars").createSignedUrl(session.avatarPath, 60 * 60);
-  if (error) return { ...session, avatarUrl: undefined };
-  return { ...session, avatarUrl: data.signedUrl };
+  const { data: profile } = await client
+    .from("seller_profiles")
+    .select("display_name, email, permissions, active")
+    .eq("auth_user_id", user.id)
+    .eq("active", true)
+    .maybeSingle();
+  const withRole: UserSession = profile
+    ? {
+      ...session,
+      name: String(profile.display_name ?? session.name),
+      email: String(profile.email ?? session.email),
+      role: "Vendedor",
+      permissions: profile.permissions && typeof profile.permissions === "object"
+        ? profile.permissions as Record<string, boolean>
+        : {},
+    }
+    : session;
+  if (!withRole.avatarPath) return withRole;
+  const { data, error } = await client.storage.from("admin-avatars").createSignedUrl(withRole.avatarPath, 60 * 60);
+  if (error) return { ...withRole, avatarUrl: undefined };
+  return { ...withRole, avatarUrl: data.signedUrl };
 }
